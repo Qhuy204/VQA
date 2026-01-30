@@ -1,0 +1,127 @@
+# Qwen3-VL 4B Finetuning Configuration
+# Based on: https://unsloth.ai/docs/models/qwen3-vl-how-to-run-and-fine-tune
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  # Unsloth pre-quantized 4-bit models (recommended)
+  # For 4B: unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit
+  # For 8B: unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit
+  # For 2B: unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit
+  name: "unsloth/Qwen3-VL-4B-Instruct-unsloth-bnb-4bit"
+  
+  # Quantization
+  load_in_4bit: true
+  
+  # Gradient checkpointing (use "unsloth" for optimized version)
+  use_gradient_checkpointing: "unsloth"
+  
+  # Max sequence length
+  max_seq_length: 2048
+
+# =============================================================================
+# LoRA Configuration
+# =============================================================================
+lora:
+  # Rank and Alpha
+  r: 16
+  lora_alpha: 16
+  lora_dropout: 0
+  
+  # Which parts to finetune
+  finetune_vision_layers: true      # Vision encoder
+  finetune_language_layers: true    # LLM layers
+  finetune_attention_modules: true  # Attention (Q, K, V, O)
+  finetune_mlp_modules: true        # MLP (gate, up, down)
+  
+  # Other settings
+  bias: "none"
+  random_state: 3407
+  use_rslora: false
+
+# =============================================================================
+# Training Arguments
+# =============================================================================
+training:
+  output_dir: "./outputs/qwen3vl-viettravelvqa"
+  
+  # Epochs and steps
+  num_train_epochs: 3
+  max_steps: -1  # Set to positive value to limit steps
+  
+  # Batch size
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  # Effective batch size = 2 * 4 = 8
+  
+  # Learning rate
+  learning_rate: 2.0e-4
+  lr_scheduler_type: "linear"
+  warmup_steps: 5
+  weight_decay: 0.01
+  
+  # Optimizer
+  optim: "adamw_8bit"
+  
+  # Logging
+  logging_steps: 1
+  
+  # Saving
+  save_steps: 100
+  save_total_limit: 3
+  
+  # Max sequence length
+  max_seq_length: 2048
+  
+  # Seed for reproducibility
+  seed: 3407
+  
+  # Reporting (set to "wandb" to enable)
+  report_to: "none"
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  train_file: "./VietTravelVQA/viettravelvqa_train.json"
+  test_file: "./VietTravelVQA/viettravelvqa_test.json"
+  image_dir: "./VietTravelVQA/images"
+  
+  # Sampling (for testing/debugging)
+  max_train_samples: null  # Set to integer for quick testing
+  max_eval_samples: null
+
+# =============================================================================
+# Inference Settings (Qwen3-VL recommended)
+# =============================================================================
+inference:
+  # For Instruct models
+  instruct:
+    temperature: 0.7
+    top_p: 0.8
+    top_k: 20
+    presence_penalty: 1.5
+    max_new_tokens: 512
+  
+  # For Thinking models
+  thinking:
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    presence_penalty: 0.0
+    max_new_tokens: 1024
+
+# =============================================================================
+# Export Options
+# =============================================================================
+export:
+  # Save LoRA adapters (always saved)
+  save_lora: true
+  
+  # Save merged 16-bit model (for vLLM)
+  save_merged_16bit: false
+  
+  # Save to GGUF (for llama.cpp)
+  save_gguf: false
+  gguf_quantization: "q4_k_m"  # q4_k_m, q8_0, q5_k_m, etc.

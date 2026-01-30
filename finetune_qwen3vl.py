@@ -420,6 +420,46 @@ def apply_lora(
 
 
 # =============================================================================
+# Custom Callbacks
+# =============================================================================
+
+class EvalFirstStepCallback:
+    """
+    Custom callback to evaluate at step 1 (for sanity check) and then every eval_steps.
+    
+    This ensures:
+    - Step 1: Evaluate to verify everything works
+    - Step eval_steps, 2*eval_steps, ...: Regular evaluation
+    """
+    
+    def __init__(self, trainer, eval_steps: int = 100):
+        from transformers import TrainerCallback
+        
+        self.eval_steps = eval_steps
+        self.evaluated_first = False
+        
+        class _Callback(TrainerCallback):
+            def __init__(inner_self):
+                inner_self.parent = self
+            
+            def on_step_end(inner_self, args, state, control, **kwargs):
+                # Evaluate at step 1 (first step check)
+                if state.global_step == 1 and not inner_self.parent.evaluated_first:
+                    logger.info("🔍 Evaluating at step 1 (sanity check)...")
+                    control.should_evaluate = True
+                    inner_self.parent.evaluated_first = True
+                
+                # Also evaluate at regular intervals
+                if state.global_step > 1 and state.global_step % inner_self.parent.eval_steps == 0:
+                    control.should_evaluate = True
+                
+                return control
+        
+        self.callback = _Callback()
+        trainer.add_callback(self.callback)
+
+
+# =============================================================================
 # Training
 # =============================================================================
 
@@ -537,6 +577,11 @@ def train(
             max_seq_length=max_seq_length,
         ),
     )
+    
+    # Add custom callback for eval at step 1 + every eval_steps
+    if eval_dataset:
+        EvalFirstStepCallback(trainer, eval_steps=eval_steps)
+        logger.info(f"📊 Will evaluate at: step 1, then every {eval_steps} steps")
     
     # Train
     logger.info("Starting training loop...")

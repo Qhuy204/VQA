@@ -427,9 +427,11 @@ def train(
     model,
     tokenizer,
     train_dataset: list,
+    eval_dataset: Optional[list] = None,
     output_dir: str = "./outputs/qwen3vl-viettravelvqa",
     num_train_epochs: int = 3,
     per_device_train_batch_size: int = 2,
+    per_device_eval_batch_size: int = 2,
     gradient_accumulation_steps: int = 4,
     learning_rate: float = 2e-4,
     max_steps: int = -1,
@@ -437,6 +439,7 @@ def train(
     warmup_steps: int = 5,
     logging_steps: int = 1,
     save_steps: int = 100,
+    eval_steps: int = 100,
     seed: int = 3407,
 ):
     """
@@ -446,9 +449,11 @@ def train(
         model: Model with LoRA adapters
         tokenizer: Tokenizer
         train_dataset: List of conversation samples
+        eval_dataset: Optional validation dataset for evaluation during training
         output_dir: Output directory for checkpoints
         num_train_epochs: Number of training epochs
-        per_device_train_batch_size: Batch size per GPU
+        per_device_train_batch_size: Batch size per GPU for training
+        per_device_eval_batch_size: Batch size per GPU for evaluation
         gradient_accumulation_steps: Gradient accumulation steps
         learning_rate: Learning rate
         max_steps: Max training steps (-1 for epochs-based)
@@ -456,6 +461,7 @@ def train(
         warmup_steps: Warmup steps
         logging_steps: Logging frequency
         save_steps: Checkpoint save frequency
+        eval_steps: Evaluation frequency (only used if eval_dataset provided)
         seed: Random seed
         
     Returns:
@@ -469,12 +475,16 @@ def train(
     logger.info("Starting Training")
     logger.info("=" * 60)
     logger.info(f"Training samples: {len(train_dataset)}")
+    if eval_dataset:
+        logger.info(f"Eval samples: {len(eval_dataset)}")
     logger.info(f"Batch size: {per_device_train_batch_size}")
     logger.info(f"Gradient accumulation: {gradient_accumulation_steps}")
     logger.info(f"Effective batch size: {per_device_train_batch_size * gradient_accumulation_steps}")
     logger.info(f"Learning rate: {learning_rate}")
     logger.info(f"Epochs: {num_train_epochs}")
     logger.info(f"Max steps: {max_steps}")
+    if eval_dataset:
+        logger.info(f"Eval every: {eval_steps} steps")
     
     # Enable training mode in Unsloth
     FastVisionModel.for_training(model)
@@ -487,14 +497,19 @@ def train(
     logger.info(f"Max memory: {max_memory} GB")
     logger.info(f"Initial reserved: {start_gpu_memory} GB")
     
+    # Determine evaluation strategy
+    eval_strategy = "steps" if eval_dataset else "no"
+    
     # Create trainer with Unsloth Vision DataCollator
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         data_collator=UnslothVisionDataCollator(model, tokenizer),  # Required for Vision
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         args=SFTConfig(
             per_device_train_batch_size=per_device_train_batch_size,
+            per_device_eval_batch_size=per_device_eval_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             warmup_steps=warmup_steps,
             num_train_epochs=num_train_epochs,
@@ -508,6 +523,11 @@ def train(
             output_dir=output_dir,
             save_steps=save_steps,
             save_total_limit=3,
+            eval_strategy=eval_strategy,
+            eval_steps=eval_steps if eval_dataset else None,
+            load_best_model_at_end=True if eval_dataset else False,
+            metric_for_best_model="eval_loss" if eval_dataset else None,
+            greater_is_better=False if eval_dataset else None,
             report_to="none",  # Set to "wandb" if needed
             
             # Required for Vision models
@@ -704,6 +724,15 @@ def main():
     parser.add_argument("--warmup_steps", type=int, default=5, help="Warmup steps")
     parser.add_argument("--logging_steps", type=int, default=1, help="Logging frequency")
     parser.add_argument("--save_steps", type=int, default=100, help="Save checkpoint frequency")
+    parser.add_argument("--eval_steps", type=int, default=100, help="Evaluation frequency")
+    parser.add_argument(
+        "--test_file",
+        type=str,
+        default="./VietTravelVQA/viettravelvqa_test.json",
+        help="Test/validation data JSON file (local)"
+    )
+    parser.add_argument("--max_eval_samples", type=int, default=None, help="Max eval samples")
+    parser.add_argument("--no_eval", action="store_true", help="Disable evaluation during training")
     
     # Output arguments
     parser.add_argument("--save_gguf", action="store_true", help="Also save to GGUF format")
@@ -755,11 +784,38 @@ def main():
         )
         train_samples = dataset.to_list()
     
+    # Load eval dataset (if not disabled)
+    eval_samples = None
+    if not args.no_eval:
+        if args.hf_dataset:
+            # Load test split from HuggingFace
+            logger.info("Loading eval dataset from HuggingFace (test split)...")
+            eval_samples = load_dataset_from_huggingface(
+                repo_id=args.hf_dataset,
+                split="test",
+                max_samples=args.max_eval_samples,
+            )
+        elif os.path.exists(args.test_file):
+            # Load from local test file
+            logger.info(f"Loading eval dataset from {args.test_file}...")
+            eval_dataset_obj = VietTravelVQADataset(
+                json_file=args.test_file,
+                image_dir=args.image_dir,
+                max_samples=args.max_eval_samples,
+            )
+            eval_samples = eval_dataset_obj.to_list()
+        
+        if eval_samples:
+            logger.info(f"✅ Loaded {len(eval_samples)} eval samples")
+        else:
+            logger.warning("No eval dataset found, training without evaluation")
+    
     # Train
     trainer, trainer_stats = train(
         model=model,
         tokenizer=tokenizer,
         train_dataset=train_samples,
+        eval_dataset=eval_samples,
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
@@ -770,6 +826,7 @@ def main():
         warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
+        eval_steps=args.eval_steps,
     )
     
     # Save model
